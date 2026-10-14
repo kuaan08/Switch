@@ -1,0 +1,69 @@
+name: One-time Eden source import
+
+# This workflow lives only on the feature branch. On successful import it deletes
+# itself along with the original integration files, leaving an exact Eden source tree.
+on:
+  push:
+    branches:
+      - feature/xbox-one-fat-eden-source
+    paths:
+      - .github/workflows/import-eden-source.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: eden-one-time-import
+  cancel-in-progress: false
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out destination branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/xbox-one-fat-eden-source
+          persist-credentials: true
+          submodules: false
+          fetch-depth: 1
+
+      - name: Replace branch contents with unmodified Eden Xbox source
+        shell: bash
+        env:
+          UPSTREAM_SHA: bb7916615d706e66f761482d5b091557b4b13151
+        run: |
+          set -euo pipefail
+          original="$RUNNER_TEMP/eden-xbox-original"
+          git clone --quiet --depth 1 --branch xbox https://github.com/JulianDr14/eden-xbox.git "$original"
+          current="$(git -C "$original" rev-parse HEAD)"
+          test "$current" = "$UPSTREAM_SHA" || {
+            echo "::error::Upstream moved: expected $UPSTREAM_SHA got $current"
+            exit 1
+          }
+          original_tree="$(git -C "$original" rev-parse 'HEAD^{tree}')"
+          echo "Pinned upstream commit: $current"
+          echo "Pinned upstream tree: $original_tree"
+
+          # Only work within THIS feature branch's checked-out working directory.
+          test "$(git branch --show-current)" = "feature/xbox-one-fat-eden-source"
+          git rm --quiet -r -f -- .
+          git -C "$original" archive HEAD | tar -xf - -C "$GITHUB_WORKSPACE"
+          git add -A
+
+          # Verify ALL paths, bytes and modes. This rules out partial imports and
+          # accidental additions to the original tree (including this workflow).
+          imported_tree="$(git write-tree)"
+          echo "Imported tree: $imported_tree"
+          test "$imported_tree" = "$original_tree" || {
+            echo "::error::Imported tree differs from pinned original, refusing to push"
+            git diff --cached --stat | tail -35
+            exit 1
+          }
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m "Import complete Eden Xbox source at $UPSTREAM_SHA"
+          git push origin HEAD:refs/heads/feature/xbox-one-fat-eden-source
+          echo "Imported the EXACT source tree into the feature branch."
