@@ -48,6 +48,9 @@ param(
     # Mesa's SPIR-V -> DXIL translator for the D3D12 renderer, built by build-spirv-to-dxil.ps1.
     # Without it the renderer still presents, through its CPU fallback.
     [string] $SpirvToDxil = "..\mesa-build\build-uwp\src\microsoft\spirv_to_dxil\spirv_to_dxil.dll",
+    # Require both shader DLLs in installable CI builds. Missing shader support
+    # must stop packaging, not silently publish a broken release artifact.
+    [switch] $RequireGpuShaders,
     [string] $OutDir = "build-uwp\package"
 )
 
@@ -108,9 +111,13 @@ if (Test-Path $s2d) {
         Copy-Item $dxil $layout
         Write-Host "signing  : $dxil"
     } catch {
+        if ($RequireGpuShaders) { throw "Required dxil.dll is missing: $($_.Exception.Message)" }
         Write-Warning "dxil.dll not found in the Windows SDK: the D3D12 renderer will present through the CPU."
     }
 } else {
+    if ($RequireGpuShaders) {
+        throw "Required spirv_to_dxil.dll not found ($s2d). Compile it with tools/xbox/build-spirv-to-dxil.ps1 before packaging."
+    }
     Write-Warning "spirv_to_dxil.dll not found ($s2d): the D3D12 renderer will present through the CPU."
 }
 

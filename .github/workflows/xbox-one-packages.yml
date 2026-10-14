@@ -17,7 +17,7 @@ jobs:
   package:
     name: Pack both UWP variants
     runs-on: windows-2022
-    timeout-minutes: 25
+    timeout-minutes: 100
     steps:
       - name: Checkout Xbox source and packaging tools
         uses: actions/checkout@v4
@@ -41,18 +41,36 @@ jobs:
           Write-Host "Source executable SHA256: $((Get-FileHash $exe -Algorithm SHA256).Hash)"
           Write-Host "Source compiled from commit: 29d1bdcc31fba4fbd574c76d2a7bc5ab7d43b1dd"
 
+      - name: Compile Mesa SPIR-V-to-DXIL UWP translator
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $mesaDir = Join-Path (Get-Location).Path 'mesa-build'
+          & ./tools/xbox/build-spirv-to-dxil.ps1 -WorkDir $mesaDir
+          if ($LASTEXITCODE -ne 0) { throw "Mesa build exited with $LASTEXITCODE" }
+          $translator = Join-Path $mesaDir 'build-uwp/src/microsoft/spirv_to_dxil/spirv_to_dxil.dll'
+          if (!(Test-Path $translator)) { throw 'Mesa shader translator DLL was not produced' }
+          $dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
+          if ($dumpbin) {
+            $exports = & $dumpbin.Source /nologo /exports $translator
+            if ($exports -notmatch 'eden_spirv_to_dxil_pipeline_v2') {
+              throw 'Mesa translator is missing required Eden shader pipeline v2 export'
+            }
+          }
+          Write-Host "Shader DLL SHA256: $((Get-FileHash $translator -Algorithm SHA256).Hash)"
+
       - name: Package normal (profiling off)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          & ./tools/xbox/package-appx.ps1 -Variant normal -Library -BuildDir build-uwp -OutDir 'build-uwp/package/normal'
+          & ./tools/xbox/package-appx.ps1 -Variant normal -Library -BuildDir build-uwp -OutDir 'build-uwp/package/normal' -SpirvToDxil 'mesa-build/build-uwp/src/microsoft/spirv_to_dxil/spirv_to_dxil.dll' -RequireGpuShaders
           if (!(Test-Path 'build-uwp/package/normal/eden-xbox-normal.appx')) { throw 'Missing normal APPX' }
 
       - name: Package diagnostic (sampling profiler enabled)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          & ./tools/xbox/package-appx.ps1 -Variant diagnostic -Library -Profile on -BuildDir build-uwp -OutDir 'build-uwp/package/diagnostic'
+          & ./tools/xbox/package-appx.ps1 -Variant diagnostic -Library -Profile on -BuildDir build-uwp -OutDir 'build-uwp/package/diagnostic' -SpirvToDxil 'mesa-build/build-uwp/src/microsoft/spirv_to_dxil/spirv_to_dxil.dll' -RequireGpuShaders
           if (!(Test-Path 'build-uwp/package/diagnostic/eden-xbox-diagnostic.appx')) { throw 'Missing diagnostic APPX' }
 
       - name: Inspect both signed APPX packages
@@ -77,6 +95,9 @@ jobs:
             if ($variant -eq 'normal' -and $config -match 'profile=') { throw 'Normal package contains profiler options' }
             if ($variant -eq 'diagnostic' -and $config -notmatch 'profile=1') { throw 'Diagnostic package lacks profiler options' }
             if (!(Test-Path "build-uwp/verify-$variant/eden-uwp.exe")) { throw "$variant lacks executable" }
+            foreach ($dll in @('spirv_to_dxil.dll', 'dxil.dll')) {
+              if (!(Test-Path "build-uwp/verify-$variant/$dll")) { throw "$variant lacks required shader library $dll" }
+            }
             Write-Host "$variant verified. SHA256: $((Get-FileHash $appx -Algorithm SHA256).Hash)"
           }
 
