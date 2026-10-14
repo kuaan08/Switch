@@ -573,8 +573,10 @@ if (ENABLE_D3D12)
     target_compile_definitions(video_core PUBLIC HAS_D3D12)
     # spirv_to_dxil.dll (Mesa) is loaded at runtime; only its C headers are needed to build.
     target_include_directories(video_core PRIVATE ${PROJECT_SOURCE_DIR}/externals/spirv-to-dxil/include)
-    target_link_libraries(video_core PRIVATE spirv-cross-hlsl spirv-cross-glsl spirv-cross-core)
-    target_compile_definitions(video_core PRIVATE EDEN_XBOX_SM5_BACKEND=1)
+    if (CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
+        target_link_libraries(video_core PRIVATE spirv-cross-hlsl spirv-cross-glsl spirv-cross-core)
+        target_compile_definitions(video_core PRIVATE EDEN_XBOX_SM5_BACKEND=1)
+    endif()
     target_link_libraries(video_core PRIVATE d3d12 dxgi)
 endif()
 

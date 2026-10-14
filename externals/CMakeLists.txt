@@ -201,12 +201,18 @@ if (CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
     set(SPIRV_CROSS_ENABLE_C_API OFF CACHE BOOL "" FORCE)
     set(SPIRV_CROSS_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
     set(SPIRV_CROSS_SKIP_INSTALL ON CACHE BOOL "" FORCE)
-    CPMAddPackage(
-        NAME SPIRV-Cross
-        GITHUB_REPOSITORY KhronosGroup/SPIRV-Cross
+    # Eden's CPM.cmake is a reduced vendored API that only supports an
+    # existing SOURCE_DIR. FetchContent downloads and configures the upstream
+    # source at a pinned commit. Store it in the shared Actions CPM cache.
+    include(FetchContent)
+    FetchContent_Declare(eden_spirv_cross_sm5
+        GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Cross.git
         GIT_TAG 300681bbcb8365a8d1eacdacdbdd0249bbf1d6b1
-        OPTIONS "SPIRV_CROSS_STATIC ON" "SPIRV_CROSS_CLI OFF"
+        GIT_SHALLOW FALSE
+        GIT_PROGRESS TRUE
+        SOURCE_DIR "${CPM_SOURCE_CACHE}/spirv-cross/sm5-300681bb"
     )
+    FetchContent_MakeAvailable(eden_spirv_cross_sm5)
 endif()
 
 # SPIRV Headers
