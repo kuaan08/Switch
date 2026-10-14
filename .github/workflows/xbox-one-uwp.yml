@@ -18,11 +18,27 @@ jobs:
   build:
     runs-on: windows-2022
     timeout-minutes: 90
+    env:
+      # sccache supports MSVC in Ninja builds. GitHub cache stores compiled outputs
+      # using its own content hashes, so flags/headers changes cannot reuse stale objects.
+      SCCACHE_GHA_ENABLED: 'true'
     steps:
       - name: Checkout original Eden source
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Restore CMake CPM source cache
+        id: cpm-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/cpm
+          key: cpmsrc-win2022-uwp-v1-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json', 'CMakeModules/**/*.cmake', 'externals/CMakeLists.txt') }}
+          restore-keys: |
+            cpmsrc-win2022-uwp-v1-
+
+      - name: Enable C++ compiler object cache
+        uses: mozilla-actions/sccache-action@v0.0.11
 
       - name: Inspect Windows UWP toolchain
         shell: pwsh
@@ -73,11 +89,26 @@ jobs:
 
       - name: Configure UWP x64 for AppContainer
         shell: cmd
-        run: call tools\xbox\build-env.bat cmake --preset uwp-x64
+        run: call tools\xbox\build-env.bat cmake --preset uwp-x64 -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+
+      # Save downloaded dependency sources before C++ compilation: even a failed
+      # compiler/linker stage should not force a full dependency download again.
+      - name: Save CPM source cache for next build
+        if: steps.cpm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/cpm
+          key: cpmsrc-win2022-uwp-v1-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json', 'CMakeModules/**/*.cmake', 'externals/CMakeLists.txt') }}
 
       - name: Build Eden UWP frontend
         shell: cmd
         run: call tools\xbox\build-env.bat cmake --build --preset uwp-x64 --target eden-uwp --parallel 2
+
+      - name: Report C++ cache statistics
+        if: always()
+        shell: pwsh
+        run: |
+          sccache --show-stats
 
       - name: Upload unsigned diagnostic EXE (not an installable package)
         if: success()
