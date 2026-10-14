@@ -93,10 +93,15 @@ jobs:
           if (!(Test-Path $translator)) { throw 'Mesa shader translator DLL was not produced' }
           $dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
           if ($dumpbin) {
-            $exports = & $dumpbin.Source /nologo /exports $translator
-            if ($exports -notmatch 'eden_spirv_to_dxil_pipeline_v2') {
+            # dumpbin emits many lines. PowerShell -notmatch on a collection returns
+            # every nonmatching line (truthy) even when the export exists.
+            # Join first, then perform a single scalar regex check.
+            $exports = (& $dumpbin.Source /nologo /exports $translator) -join "`n"
+            if ($LASTEXITCODE -ne 0) { throw 'dumpbin failed while reading Mesa DLL exports' }
+            if ($exports -notmatch '\beden_spirv_to_dxil_pipeline_v2\b') {
               throw 'Mesa translator is missing required Eden shader pipeline v2 export'
             }
+            Write-Host 'Verified Eden shader pipeline v2 export.'
           }
           Write-Host "Shader DLL SHA256: $((Get-FileHash $translator -Algorithm SHA256).Hash)"
 
