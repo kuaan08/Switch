@@ -4,6 +4,7 @@
 #pragma once
 
 #include <mutex>
+#include <d3dcompiler.h>
 #include <span>
 #include <vector>
 
@@ -16,6 +17,9 @@
 struct IDxcValidator;
 
 namespace D3D12 {
+
+// Set by Device::LogCapabilities before constructing the shader compiler.
+void SetSm5DeviceRequired(bool required);
 
 /// Register spaces the translated shaders use for data Vulkan passes outside descriptor sets.
 /// Guest descriptors keep the Vulkan model: space = set, register = binding.
@@ -80,12 +84,17 @@ public:
 
 private:
     void Sign(std::vector<u8>& dxil, u64 trace_pipeline = 0) const;
+    std::vector<CompiledStage> CompileSm5(std::span<const PipelineStage> stages,
+                                          u64 trace_pipeline) const;
     dxil_spirv_runtime_conf MakeConf() const;
 
     using PFN_spirv_to_dxil = decltype(&::spirv_to_dxil);
     using PFN_spirv_to_dxil_free = decltype(&::spirv_to_dxil_free);
     using PFN_eden_spirv_to_dxil_pipeline = decltype(&::eden_spirv_to_dxil_pipeline);
 
+    Common::DynamicLibrary d3dcompiler_library;
+    decltype(&::D3DCompile) compile_hlsl{};
+    bool sm5_active{};
     Common::DynamicLibrary spirv_to_dxil_library;
     Common::DynamicLibrary dxil_library;
     PFN_spirv_to_dxil translate{};

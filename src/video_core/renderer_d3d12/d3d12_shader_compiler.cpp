@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <array>
+#include <atomic>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -10,6 +11,9 @@
 #include "video_core/renderer_d3d12/d3d12_shader_compiler.h"
 
 #include <dxcapi.h>
+#ifdef EDEN_XBOX_SM5_BACKEND
+#include <spirv_hlsl.hpp>
+#endif
 #include <fmt/format.h>
 
 #include "common/bug_tracker.h"
@@ -20,6 +24,23 @@
 namespace D3D12 {
 
 namespace {
+std::atomic_bool sm5_device_required{false};
+std::atomic_uint sm5_compilation_logged{0};
+
+#ifdef EDEN_XBOX_SM5_BACKEND
+const char* ShaderModel51Target(dxil_spirv_shader_stage stage) {
+    // Matches stage ordering in SPIR-V emitting pipeline (VS, HS, DS, GS, PS, CS).
+    switch (stage) {
+    case DXIL_SPIRV_SHADER_VERTEX: return "vs_5_1";
+    case DXIL_SPIRV_SHADER_TESS_CTRL: return "hs_5_1";
+    case DXIL_SPIRV_SHADER_TESS_EVAL: return "ds_5_1";
+    case DXIL_SPIRV_SHADER_GEOMETRY: return "gs_5_1";
+    case DXIL_SPIRV_SHADER_FRAGMENT: return "ps_5_1";
+    case DXIL_SPIRV_SHADER_COMPUTE: return "cs_5_1";
+    default: return nullptr;
+    }
+}
+#endif
 
 /// Shader model the translator may use: the Xbox Series UWP runtime reports 6.4.
 constexpr dxil_shader_model SHADER_MODEL = SHADER_MODEL_6_4;
@@ -70,7 +91,31 @@ void LogTranslatorMessage(void*, const char* msg) {
 
 } // Anonymous namespace
 
+void SetSm5DeviceRequired(bool required) {
+    sm5_device_required.store(required, std::memory_order_release);
+}
+
 ShaderCompiler::ShaderCompiler() {
+#ifdef EDEN_XBOX_SM5_BACKEND
+    if (sm5_device_required.load(std::memory_order_acquire)) {
+        // The Xbox One Fat driver creates DXBC 5.0 PSOs successfully but
+        // rejects game DXIL 6.4 PSOs. D3DCompile ships as a Windows UWP API.
+        // Fail visibly if the runtime DLL is missing, rather than silently
+        // selecting the incompatible DXIL shader path.
+        if (!d3dcompiler_library.Open("d3dcompiler_47.dll") ||
+            !d3dcompiler_library.GetSymbol("D3DCompile", &compile_hlsl)) {
+            LOG_ERROR(Render, "D3D12 SM5.1: cannot load d3dcompiler_47.dll/D3DCompile "
+                              "(error {}); package the UWP-compatible runtime compiler",
+                      GetLastError());
+            return;
+        }
+        sm5_active = true;
+        available = true;
+        LOG_INFO(Render, "D3D12 SM5.1: experimental SPIR-V -> SPIRV-Cross HLSL -> DXBC "
+                         "backend ACTIVATED (no DXIL 6.4 shaders on Xbox One Fat)");
+        return;
+    }
+#endif
     if (!spirv_to_dxil_library.Open("spirv_to_dxil.dll")) {
         LOG_ERROR(Render, "D3D12: spirv_to_dxil.dll could not be loaded (error {})",
                   GetLastError());
@@ -133,6 +178,10 @@ std::vector<u8> ShaderCompiler::Compile(std::span<const u32> spirv, dxil_spirv_s
     if (!available) {
         throw std::runtime_error("D3D12: the shader path is unavailable");
     }
+    if (sm5_active) {
+        const std::array<PipelineStage, 1> stages{{{spirv, stage}}};
+        return CompileSm5(stages, 0).at(0).dxil;
+    }
     dxil_spirv_runtime_conf conf = MakeConf();
     // An unconditional flip only applies to the viewports set in its mask.
     if (flip_y) {
@@ -163,6 +212,9 @@ std::vector<ShaderCompiler::CompiledStage> ShaderCompiler::CompilePipeline(
     }
     if (stages.empty() || stages.size() > EDEN_SPIRV_TO_DXIL_MAX_STAGES) {
         throw std::runtime_error(fmt::format("D3D12: invalid pipeline of {} stages", stages.size()));
+    }
+    if (sm5_active) {
+        return CompileSm5(stages, trace_pipeline);
     }
     // The last stage before the fragment one owns the clip-space position the flip applies to.
     size_t flip_stage = stages.size();
@@ -226,6 +278,73 @@ std::vector<ShaderCompiler::CompiledStage> ShaderCompiler::CompilePipeline(
         Sign(stage.dxil, trace_pipeline);
     }
     return result;
+}
+
+
+std::vector<ShaderCompiler::CompiledStage> ShaderCompiler::CompileSm5(
+    std::span<const PipelineStage> stages, u64 trace_pipeline) const {
+#ifdef EDEN_XBOX_SM5_BACKEND
+    std::vector<CompiledStage> result(stages.size());
+    VideoCore::FrameTrace::ScopedSpan translate_span{
+        VideoCore::FrameTrace::Event::PipelineTranslateLong, trace_pipeline, trace_pipeline != 0};
+    for (size_t i = 0; i < stages.size(); ++i) {
+        const char* target = ShaderModel51Target(stages[i].stage);
+        if (!target) {
+            throw std::runtime_error(fmt::format("D3D12 SM5.1: unsupported SPIR-V stage {}",
+                                                 static_cast<int>(stages[i].stage)));
+        }
+        try {
+            std::vector<u32> spirv(stages[i].spirv.begin(), stages[i].spirv.end());
+            spirv_cross::CompilerHLSL cross{std::move(spirv)};
+            auto options = cross.get_hlsl_options();
+            options.shader_model = 51;
+            options.point_size_compat = true;
+            cross.set_hlsl_options(options);
+            // Eden's Vulkan push-constant block is root constant b0 space30.
+            // Descriptors emitted by spirv_emit_context are in space0.
+            spirv_cross::HLSLResourceBinding push{};
+            push.stage = cross.get_execution_model();
+            push.desc_set = spirv_cross::ResourceBindingPushConstantDescriptorSet;
+            push.binding = spirv_cross::ResourceBindingPushConstantBinding;
+            push.cbv.register_space = PUSH_CONSTANT_SPACE;
+            push.cbv.register_binding = 0;
+            cross.add_hlsl_resource_binding(push);
+
+            const std::string hlsl = cross.compile();
+            ComPtr<ID3DBlob> output;
+            ComPtr<ID3DBlob> diagnostics;
+            const HRESULT hr = compile_hlsl(
+                hlsl.data(), hlsl.size(), "EdenXboxOneSM5", nullptr, nullptr,
+                "main", target, D3DCOMPILE_OPTIMIZATION_LEVEL1 |
+                D3DCOMPILE_ENABLE_STRICTNESS, 0, &output, &diagnostics);
+            if (FAILED(hr) || !output) {
+                const std::string details = diagnostics
+                    ? std::string{static_cast<const char*>(diagnostics->GetBufferPointer()),
+                                  diagnostics->GetBufferSize()}
+                    : "no compiler diagnostics";
+                LOG_ERROR(Render, "D3D12 SM5.1: {} shader compile failed 0x{:08X}: {}",
+                          target, static_cast<u32>(hr), details);
+                throw std::runtime_error(fmt::format(
+                    "D3D12 SM5.1: HLSL -> DXBC {} failed (0x{:08X}): {}",
+                    target, static_cast<u32>(hr), details));
+            }
+            const u8* bytes = static_cast<const u8*>(output->GetBufferPointer());
+            result[i].dxil.assign(bytes, bytes + output->GetBufferSize());
+            if (sm5_compilation_logged.fetch_add(1, std::memory_order_relaxed) < 24) {
+                LOG_INFO(Render, "D3D12 SM5.1: {} compiled {} bytes DXBC from {} SPIR-V words",
+                         target, result[i].dxil.size(), stages[i].spirv.size());
+            }
+        } catch (const spirv_cross::CompilerError& e) {
+            LOG_ERROR(Render, "D3D12 SM5.1: SPIR-V -> HLSL failed for {}: {}",
+                      target, e.what());
+            throw std::runtime_error(fmt::format("D3D12 SM5.1: {} conversion: {}",
+                                                 target, e.what()));
+        }
+    }
+    return result;
+#else
+    throw std::runtime_error("SM5 backend was not enabled at build time");
+#endif
 }
 
 dxil_spirv_runtime_conf ShaderCompiler::MakeConf() const {

@@ -125,6 +125,25 @@ if (Test-Path $s2d) {
     Write-Warning "spirv_to_dxil.dll not found ($s2d): the D3D12 renderer will present through the CPU."
 }
 
+# On the Xbox One Fat the runtime shader compiler converts HLSL to DXBC
+# Shader Model 5.1. The Windows 10 SDK redistributes d3dcompiler_47.dll
+# for AppContainer/Store; never copy a random system or desktop DLL.
+$compilerCandidates = @()
+foreach ($base in @(${env:ProgramFiles(x86)}, ${env:ProgramFiles})) {
+    if ($base) {
+        $compilerCandidates += (Join-Path $base 'Windows Kits\10\Redist\D3D\x64\d3dcompiler_47.dll')
+        $compilerCandidates += (Join-Path $base 'Windows Kits\8.1\Redist\D3D\x64\d3dcompiler_47.dll')
+    }
+}
+$compilerRuntime = $compilerCandidates | Where-Object { Test-Path -LiteralPath $_ } |
+    Select-Object -First 1
+if ($compilerRuntime) {
+    Copy-Item -LiteralPath $compilerRuntime -Destination (Join-Path $layout 'd3dcompiler_47.dll') -Force
+    Write-Host "Xbox SM5.1: bundled Windows SDK compiler $compilerRuntime"
+} else {
+    Write-Warning "Xbox SM5.1: no redistributable D3DCompiler_47 in SDK; the console must provide it."
+}
+
 if ($ShaderModelProbe) {
     $fxc = Find-SdkTool "fxc.exe"
     foreach ($stage in @(

@@ -185,6 +185,30 @@ if (NOT TARGET SDL3::SDL3)
     endif()
 endif()
 
+
+# Xbox One Fat UWP reports Shader Model 5.1, and rejects Mesa DXIL 6.4 PSOs.
+# Build only the cross-compiler needed for an experimental SPIR-V -> HLSL
+# translation path; pin exact upstream source for reproducibility.
+if (CMAKE_SYSTEM_NAME STREQUAL "WindowsStore")
+    set(SPIRV_CROSS_STATIC ON CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_SHARED OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_CLI OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_GLSL ON CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_HLSL ON CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_MSL OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_CPP OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_REFLECT OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_C_API OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_SKIP_INSTALL ON CACHE BOOL "" FORCE)
+    CPMAddPackage(
+        NAME SPIRV-Cross
+        GITHUB_REPOSITORY KhronosGroup/SPIRV-Cross
+        GIT_TAG 300681bbcb8365a8d1eacdacdbdd0249bbf1d6b1
+        OPTIONS "SPIRV_CROSS_STATIC ON" "SPIRV_CROSS_CLI OFF"
+    )
+endif()
+
 # SPIRV Headers
 AddJsonPackage(spirv-headers)
 

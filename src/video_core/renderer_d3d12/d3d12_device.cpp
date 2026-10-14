@@ -22,6 +22,7 @@
 #include "video_core/renderer_d3d12/d3d12_debug_messages.h"
 #include "video_core/renderer_d3d12/d3d12_device.h"
 #include "video_core/renderer_d3d12/diagnostics/d3d12_sm5_probe.h"
+#include "video_core/renderer_d3d12/d3d12_shader_compiler.h"
 
 namespace D3D12 {
 
@@ -675,6 +676,10 @@ void Device::LogCapabilities() const {
     LOG_INFO(Render, "D3D12: highest shader model {}.{}",
              static_cast<int>(shader_model.HighestShaderModel) >> 4,
              static_cast<int>(shader_model.HighestShaderModel) & 0xF);
+    // Configure the compiler before RendererD3D12 constructs it. The Xbox
+    // One Fat reports 5.1, so an SM6.4 DXIL pipeline cannot be used there.
+    SetSm5DeviceRequired(shader_model.HighestShaderModel != 0 &&
+                         shader_model.HighestShaderModel < D3D_SHADER_MODEL_6_0);
     if (shader_model.HighestShaderModel != 0 &&
         shader_model.HighestShaderModel < D3D_SHADER_MODEL_6_0) {
         // The current Mesa SPIR-V -> DXIL renderer targets Shader Model 6.4.
