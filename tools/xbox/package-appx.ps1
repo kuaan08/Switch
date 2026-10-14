@@ -12,6 +12,11 @@
 param(
     # Directory the uwp-x64 preset built into (CMakePresets.json binaryDir).
     [string] $BuildDir = "build-uwp",
+    # 'normal' and 'diagnostic' have separate package identities so they can be
+    # installed side by side, keeping separate LocalState and profiler settings.
+    # 'default' retains the upstream name and packaging behavior.
+    [ValidateSet("default", "normal", "diagnostic")]
+    [string] $Variant = "default",
     # Homebrew NRO bundled as the GATE-2 payload. It must emit the JIT-liveness sentinel
     # EDEN_XBOX_JIT_ALIVE via svcOutputDebugString. NO keys/firmware/commercial ROMs (house rule).
     [string] $BootNro,
@@ -170,15 +175,34 @@ if ($BootNro -or $gameName -or $BootCfg.Count -gt 0) {
     Write-Warning "No -BootNro given. The app will activate, fail to load the NRO and log status 2 to eden_uwp_diag.txt."
 }
 
+# Distinct package identities let the normal and diagnostic builds coexist.
+# The original manifest remains unchanged in the repository.
+$stagedManifest = Join-Path $layout "AppxManifest.xml"
+[xml]$mf = Get-Content $stagedManifest -Raw
+if ($Variant -ne "default") {
+    $identity = $mf.SelectSingleNode("/*[local-name()='Package']/*[local-name()='Identity']")
+    $propsName = $mf.SelectSingleNode("/*[local-name()='Package']/*[local-name()='Properties']/*[local-name()='DisplayName']")
+    $visuals = $mf.SelectSingleNode("//*[local-name()='VisualElements']")
+    if (-not $identity -or -not $propsName -or -not $visuals) {
+        throw "Expected identity/display-name elements missing from AppxManifest.xml."
+    }
+    $displayName = if ($Variant -eq "diagnostic") { "Eden Xbox Diagnostic" } else { "Eden Xbox" }
+    $identityName = if ($Variant -eq "diagnostic") { "EdenEmuProject.EdenXboxDiagnostic" } else { "EdenEmuProject.EdenXbox" }
+    $identity.SetAttribute("Name", $identityName)
+    $propsName.InnerText = $displayName
+    $visuals.SetAttribute("DisplayName", $displayName)
+    $mf.Save($stagedManifest)
+    Write-Host "variant  : $Variant ($identityName)"
+}
 # Publisher mismatch between manifest and cert is the #1 sideload rejection; fail loudly here.
-[xml]$mf = Get-Content (Join-Path $layout "AppxManifest.xml") -Raw
 if ($mf.Package.Identity.Publisher -ne $PublisherCN) {
     throw "Publisher mismatch: manifest has '$($mf.Package.Identity.Publisher)' but signing with '$PublisherCN'."
 }
 
 # --- 3. pack -----------------------------------------------------------------------------
 $makeappx = Find-SdkTool "MakeAppx.exe"
-$appx = Join-Path $repo "$OutDir\eden-xbox.appx"
+$packageName = if ($Variant -eq "default") { "eden-xbox.appx" } else { "eden-xbox-$Variant.appx" }
+$appx = Join-Path $repo (Join-Path $OutDir $packageName)
 if (Test-Path $appx) { Remove-Item $appx -Force }
 # A bundled game dump is gigabytes of encrypted data that does not compress: skip compression.
 $packArgs = @("pack", "/d", $layout, "/p", $appx, "/o")
@@ -189,7 +213,7 @@ if ($LASTEXITCODE -ne 0) { throw "MakeAppx failed ($LASTEXITCODE)." }
 # --- 4. sign -----------------------------------------------------------------------------
 # Reuse a matching cert if one is already in the user store, else mint a self-signed one.
 $cert = Get-ChildItem Cert:\CurrentUser\My |
-        Where-Object { $_.Subject -eq $PublisherCN -and $_.NotAfter -gt (Get-Date) } |
+        Where-Object { $_.Subject -eq $PublisherCN -and $_.NotAfter -gt (Get-Date) -and $_.HasPrivateKey } |
         Select-Object -First 1
 if (-not $cert) {
     Write-Host "minting a self-signed code-signing cert for $PublisherCN"
@@ -200,8 +224,14 @@ if (-not $cert) {
 }
 
 $signtool = Find-SdkTool "SignTool.exe"
-& $signtool sign /fd SHA256 /sha1 $cert.Thumbprint /t http://timestamp.digicert.com $appx
-if ($LASTEXITCODE -ne 0) { throw "SignTool failed ($LASTEXITCODE)." }
+& $signtool sign /fd SHA256 /sha1 $cert.Thumbprint /tr http://timestamp.digicert.com /td SHA256 $appx
+if ($LASTEXITCODE -ne 0) {
+    # Offline CI runners can fail timestamping. A locally signed development
+    # package is still useful; the certificate expires normally without a stamp.
+    Write-Warning "RFC3161 timestamp failed; retrying the developer signature without timestamp."
+    & $signtool sign /fd SHA256 /sha1 $cert.Thumbprint $appx
+    if ($LASTEXITCODE -ne 0) { throw "SignTool failed even without timestamp ($LASTEXITCODE)." }
+}
 
 # The console must trust the signer: upload this .cer alongside the appx in the Device Portal.
 $cer = Join-Path $repo "$OutDir\eden-xbox.cer"
