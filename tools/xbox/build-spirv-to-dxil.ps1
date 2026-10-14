@@ -31,11 +31,21 @@ if (-not (Test-Path (Join-Path $src "meson.build"))) {
         Write-Host "downloading Mesa $MesaVersion ..."
         Invoke-WebRequest "https://archive.mesa3d.org/mesa-$MesaVersion.tar.xz" -OutFile $tarball
     }
-    Write-Host "extracting $tarball ..."
-    # tar reports errors for the few symlinks in the tarball (CI files, not needed here): the check
-    # below is what decides whether extraction worked.
-    & tar.exe -xf $tarball -C $WorkDir 2>$null
-    if (-not (Test-Path (Join-Path $src "meson.build"))) { throw "extracting Mesa failed" }
+    Write-Host "extracting $tarball with Python's streaming LZMA/tar reader (progress every 100 entries) ..."
+    # Windows tar.exe remained silent in this operation for over 60 minutes on
+    # GitHub Windows 2022. Python's streaming reader reports progress and skips
+    # the handful of Mesa CI symlinks that the old script also could not create.
+    # Enforce the known release checksum even when running this script directly.
+    if ($MesaVersion -eq '26.2.3') {
+        $expectedSha256 = '1628058a8d2c0615975de5a15ab7bbb9638c50000b5bed9456ff423ea034a81f'
+        $actualSha256 = (Get-FileHash -Algorithm SHA256 -Path $tarball).Hash.ToLowerInvariant()
+        if ($actualSha256 -ne $expectedSha256) {
+            throw "Mesa $MesaVersion source SHA256 mismatch: $actualSha256"
+        }
+    }
+    & python (Join-Path $PSScriptRoot 'extract-mesa.py') $tarball $WorkDir $MesaVersion
+    if ($LASTEXITCODE -ne 0) { throw "Mesa streaming extraction failed ($LASTEXITCODE)." }
+    if (-not (Test-Path (Join-Path $src "meson.build"))) { throw "extracting Mesa failed (meson.build missing)" }
 }
 
 # --- Local patches (idempotent) ---------------------------------------------------------------

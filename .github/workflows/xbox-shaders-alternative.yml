@@ -5,6 +5,8 @@ on:
     branches: [feature/xbox-one-fat-eden-source]
     paths:
       - '.github/workflows/xbox-shaders-alternative.yml'
+      - 'tools/xbox/build-spirv-to-dxil.ps1'
+      - 'tools/xbox/extract-mesa.py'
   workflow_dispatch:
 
 permissions:

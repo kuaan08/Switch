@@ -31,3 +31,17 @@ Outputs after a successful run:
 WARNING: Even with valid shader DLLs, successful compilation and packaging
 do not prove Xbox One Fat graphics/feature-level compatibility. Confirm with
 console test and logs. No keys, firmware or commercial game dumps are shipped.
+
+## 2026-10-14: Windows tar extraction hang
+
+Both the original job (38587712454) and the alternate job (38594160396)
+remained in the source extraction stage instead of compiling C. The alternate
+watchdog terminated extraction after 16 minutes without new output. The
+source archive checksum was valid. The shader build script now uses
+`tools/xbox/extract-mesa.py`, which opens the verified `.tar.xz` as an
+LZMA/tar streaming reader, emits progress every 100 files, and skips
+upstream symbolic links unsupported on this Windows runner. The independent
+workflow automatically reruns whenever the extraction script changes.
+
+A successful extraction is **not** a successful shader build or proof of
+Xbox One Fat compatibility; subsequent Meson/Ninja stages must also succeed.
