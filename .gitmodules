@@ -1,0 +1,3 @@
+[submodule "upstream/eden-xbox"]
+	path = upstream/eden-xbox
+	url = https://github.com/JulianDr14/eden-xbox.git
