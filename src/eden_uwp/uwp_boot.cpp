@@ -1761,6 +1761,7 @@ std::string FormatFrames(const char* prefix, void* const* frames, USHORT count) 
 // sees every fault. It is installed LAST in the chain, so the demand-commit handlers (DRAM backing,
 // VirtualBuffer) resolve their own expected faults first and never reach it.
 std::atomic<int> g_first_chance_lines{0};
+std::atomic_bool g_first_access_violation_stack_logged{false};
 constexpr int MAX_FIRST_CHANCE_LINES = 32;
 
 const char* ProtectName(DWORD protect) {
@@ -1800,6 +1801,28 @@ void DescribeAddress(std::uintptr_t addr, char* out, std::size_t out_size) {
                        : mbi.Type == MEM_MAPPED ? "mapped"
                        : mbi.Type == MEM_IMAGE  ? "image"
                                                 : "-";
+    // Previous A Short Hike reports faulted at a stable module offset
+    // +0x3732d, but ASLR changed its absolute address each time.
+    // Name loaded DLLs so the fault can be attributed to the right runtime.
+    if (mbi.Type == MEM_IMAGE) {
+        HMODULE module{};
+        char full_path[MAX_PATH]{};
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               reinterpret_cast<LPCSTR>(addr), &module) &&
+            GetModuleFileNameA(module, full_path, MAX_PATH) != 0) {
+            const char* separator = std::strrchr(full_path, '\\');
+            const char* name = separator ? separator + 1 : full_path;
+            std::snprintf(out, out_size, "%s+0x%llx [%s %s, alloc base 0x%llx]",
+                          name,
+                          static_cast<unsigned long long>(
+                              addr - reinterpret_cast<std::uintptr_t>(module)),
+                          state, mbi.State == MEM_COMMIT ? ProtectName(mbi.Protect) : "-",
+                          static_cast<unsigned long long>(
+                              reinterpret_cast<std::uintptr_t>(mbi.AllocationBase)));
+            return;
+        }
+    }
     std::snprintf(out, out_size, "0x%llx [%s %s %s, alloc base 0x%llx]",
                   static_cast<unsigned long long>(addr), state, type,
                   mbi.State == MEM_COMMIT ? ProtectName(mbi.Protect) : "-",
@@ -1910,6 +1933,27 @@ LONG NTAPI FirstChanceLogger(EXCEPTION_POINTERS* ep) {
     std::memcpy(t_last_exception, line, sizeof(t_last_exception));
     if (g_first_chance_lines.fetch_add(1, std::memory_order_relaxed) < MAX_FIRST_CHANCE_LINES) {
         WriteDiagRaw(line, /*debugger_channel=*/false);
+    }
+    // Capture the faulting thread's original context before the Xbox UWP
+    // terminates the process. Avoid changing exception handling semantics.
+    if (rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+        !g_first_access_violation_stack_logged.exchange(true, std::memory_order_relaxed) &&
+        ep->ContextRecord != nullptr) {
+        const CONTEXT& ctx = *ep->ContextRecord;
+        char registers[384];
+        std::snprintf(registers, sizeof(registers),
+                      "[eden-uwp] FIRST-CHANCE AV context: RIP=0x%llx RSP=0x%llx "
+                      "RAX=0x%llx RCX=0x%llx RDX=0x%llx R8=0x%llx R9=0x%llx\n",
+                      static_cast<unsigned long long>(ctx.Rip),
+                      static_cast<unsigned long long>(ctx.Rsp),
+                      static_cast<unsigned long long>(ctx.Rax),
+                      static_cast<unsigned long long>(ctx.Rcx),
+                      static_cast<unsigned long long>(ctx.Rdx),
+                      static_cast<unsigned long long>(ctx.R8),
+                      static_cast<unsigned long long>(ctx.R9));
+        WriteDiagRaw(registers, /*debugger_channel=*/false);
+        WriteDiagRaw(FormatFaultStack(ctx, "[eden-uwp] first-chance AV fault stack:").c_str(),
+                     /*debugger_channel=*/false);
     }
     return EXCEPTION_CONTINUE_SEARCH; // observe only
 }
