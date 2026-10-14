@@ -1,0 +1,66 @@
+name: Xbox One Fat - UWP x64 build attempt
+
+on:
+  push:
+    branches: [feature/xbox-one-fat-eden-source]
+    paths:
+      - '.github/workflows/xbox-one-uwp.yml'
+      - 'CMakePresets.json'
+      - 'CMakeLists.txt'
+      - 'src/**'
+      - 'tools/xbox/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - name: Checkout original Eden source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Inspect Windows UWP toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (!(Test-Path $vswhere)) { throw 'Visual Studio Installer / vswhere not found' }
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'VS2022 C++ toolset missing' }
+          Write-Host "VS root: $vs"
+          $uwp = & $vswhere -latest -products * -requires Microsoft.VisualStudio.ComponentGroup.UWP.VC -property installationPath
+          Write-Host "UWP C++ component: $(if ($uwp) {'present'} else {'not detected'})"
+          foreach ($cmd in 'cmake', 'ninja', 'perl', 'nasm', 'glslangValidator', 'glslang') {
+            $found = Get-Command $cmd -ErrorAction SilentlyContinue
+            Write-Host "${cmd}: $(if ($found) {$found.Source} else {'missing'})"
+          }
+          cmake --version
+
+      - name: Install native build utilities
+        shell: pwsh
+        run: |
+          choco install nasm strawberryperl -y --no-progress --limit-output
+
+      - name: Configure UWP x64 for AppContainer
+        shell: cmd
+        run: call tools\xbox\build-env.bat cmake --preset uwp-x64
+
+      - name: Build Eden UWP frontend
+        shell: cmd
+        run: call tools\xbox\build-env.bat cmake --build --preset uwp-x64 --target eden-uwp --parallel 2
+
+      - name: Upload unsigned diagnostic EXE (not an installable package)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eden-uwp-x64-unsigned-diagnostic
+          path: |
+            build-uwp/bin/eden-uwp.exe
+            build-uwp/bin/*.dll
+          if-no-files-found: error
+          retention-days: 7
