@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   build:
@@ -110,3 +111,68 @@ jobs:
             build-uwp/bin/*.dll
           if-no-files-found: error
           retention-days: 7
+
+      # The complete Mesa UWP shader translator was already compiled and
+      # validated in run 38597070329. Reuse it rather than waiting for Mesa
+      # to rebuild alongside the diagnostic core each time.
+      - name: Download validated DXIL shader DLLs from successful APPX
+        uses: actions/download-artifact@v4
+        with:
+          name: Eden-Xbox-Diagnostic-Shader-Fixed-APPX
+          run-id: 38597070329
+          github-token: ${{ github.token }}
+          path: staging-validated
+
+      - name: Extract validated spirv_to_dxil.dll from APPX
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.IO.Compression
+          $package = Get-ChildItem staging-validated -Recurse -Filter eden-xbox-diagnostic.appx | Select-Object -First 1
+          if (!$package) { throw 'Missing validated shader-enabled APPX artifact' }
+          $appx = [System.IO.Compression.ZipFile]::OpenRead($package.FullName)
+          try {
+            $entry = $appx.GetEntry('spirv_to_dxil.dll')
+            if (!$entry) { throw 'Validated APPX has no spirv_to_dxil.dll' }
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile(
+              $entry, (Join-Path (Resolve-Path 'build-uwp/bin').Path 'spirv_to_dxil.dll'), $true)
+          } finally { $appx.Dispose() }
+          Write-Host "Recovered translator SHA256: $((Get-FileHash 'build-uwp/bin/spirv_to_dxil.dll').Hash)"
+
+      - name: Build diagnostic APPX with SM5.0/DXBC graphics probe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ./tools/xbox/package-appx.ps1 -Variant diagnostic -Library -Profile on -ShaderModelProbe -RequireGpuShaders `
+            -SpirvToDxil 'build-uwp/bin/spirv_to_dxil.dll' `
+            -BuildDir build-uwp -OutDir 'build-uwp/package/sm5probe'
+          if (!(Test-Path 'build-uwp/package/sm5probe/eden-xbox-diagnostic.appx')) {
+            throw 'Missing SM5 probe diagnostic APPX'
+          }
+
+      - name: Verify shader probe and both D3D12 libraries in APPX
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.IO.Compression
+          $file = (Resolve-Path 'build-uwp/package/sm5probe/eden-xbox-diagnostic.appx').Path
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($file)
+          try {
+            $items = @($zip.Entries | ForEach-Object FullName)
+            foreach ($name in @('eden-uwp.exe', 'spirv_to_dxil.dll', 'dxil.dll',
+                                 'eden_probe_vs.cso', 'eden_probe_ps.cso', 'AppxManifest.xml')) {
+              if ($items -notcontains $name) { throw "Missing $name from SM5 diagnostic APPX" }
+            }
+          } finally { $zip.Dispose() }
+          Write-Host "SM5 probe APPX complete and signed: $((Get-FileHash $file).Hash)"
+
+      - name: Upload installable Xbox One Shader Model probe diagnostic
+        uses: actions/upload-artifact@v4
+        with:
+          name: Eden-Xbox-OneFat-SM5-DXBC-Probe-APPX
+          path: |
+            build-uwp/package/sm5probe/eden-xbox-diagnostic.appx
+            build-uwp/package/sm5probe/eden-xbox.cer
+            build-uwp/package/sm5probe/Microsoft.VCLibs.x64.14.00.appx
+          if-no-files-found: error
+          retention-days: 14

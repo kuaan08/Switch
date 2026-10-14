@@ -494,6 +494,8 @@ if (ENABLE_D3D12)
         renderer_d3d12/diagnostics/d3d12_frame_dump.cpp
         renderer_d3d12/diagnostics/d3d12_pipeline_diagnostics.cpp
         renderer_d3d12/diagnostics/d3d12_pipeline_diagnostics.h
+        renderer_d3d12/diagnostics/d3d12_sm5_probe.cpp
+        renderer_d3d12/diagnostics/d3d12_sm5_probe.h
         renderer_d3d12/diagnostics/d3d12_perf_report.cpp
         renderer_d3d12/d3d12_fence_manager.cpp
         renderer_d3d12/d3d12_fence_manager.h

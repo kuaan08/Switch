@@ -21,6 +21,7 @@
 #include "video_core/renderer_d3d12/d3d12_command_stream.h"
 #include "video_core/renderer_d3d12/d3d12_debug_messages.h"
 #include "video_core/renderer_d3d12/d3d12_device.h"
+#include "video_core/renderer_d3d12/diagnostics/d3d12_sm5_probe.h"
 
 namespace D3D12 {
 
@@ -674,6 +675,17 @@ void Device::LogCapabilities() const {
     LOG_INFO(Render, "D3D12: highest shader model {}.{}",
              static_cast<int>(shader_model.HighestShaderModel) >> 4,
              static_cast<int>(shader_model.HighestShaderModel) & 0xF);
+    if (shader_model.HighestShaderModel != 0 &&
+        shader_model.HighestShaderModel < D3D_SHADER_MODEL_6_0) {
+        // The current Mesa SPIR-V -> DXIL renderer targets Shader Model 6.4.
+        // Test independent, precompiled DXBC 5.0 pipelines without changing
+        // game shaders or claiming that the whole renderer can use DXBC.
+        LOG_WARNING(Render,
+                    "D3D12 SM5 probe: this device reports Shader Model {}.{}; Eden emits DXIL SM6.4",
+                    static_cast<int>(shader_model.HighestShaderModel) >> 4,
+                    static_cast<int>(shader_model.HighestShaderModel) & 0xF);
+        DiagnoseShaderModel5Pipeline(dev);
+    }
 
     D3D12_FEATURE_DATA_ROOT_SIGNATURE root_signature{D3D_ROOT_SIGNATURE_VERSION_1_2};
     while (!Query(dev, D3D12_FEATURE_ROOT_SIGNATURE, root_signature) &&

@@ -51,6 +51,10 @@ param(
     # Require both shader DLLs in installable CI builds. Missing shader support
     # must stop packaging, not silently publish a broken release artifact.
     [switch] $RequireGpuShaders,
+    # Compile minimal DXBC Shader Model 5.0 test shaders using fxc.exe from the
+    # Windows SDK and ship them beside the executable for console PSO probes.
+    # No DLL compiler is needed on the Xbox to execute the probe.
+    [switch] $ShaderModelProbe,
     [string] $OutDir = "build-uwp\package"
 )
 
@@ -119,6 +123,22 @@ if (Test-Path $s2d) {
         throw "Required spirv_to_dxil.dll not found ($s2d). Compile it with tools/xbox/build-spirv-to-dxil.ps1 before packaging."
     }
     Write-Warning "spirv_to_dxil.dll not found ($s2d): the D3D12 renderer will present through the CPU."
+}
+
+if ($ShaderModelProbe) {
+    $fxc = Find-SdkTool "fxc.exe"
+    foreach ($stage in @(
+        @{ Name = "vs"; Target = "vs_5_0" },
+        @{ Name = "ps"; Target = "ps_5_0" }
+    )) {
+        $source = Join-Path $repo ("tools\\xbox\\shader-probe\\sm5_" + $stage.Name + ".hlsl")
+        $compiled = Join-Path $layout ("eden_probe_" + $stage.Name + ".cso")
+        & $fxc /nologo /E main /T $stage.Target /Fo $compiled $source
+        if ($LASTEXITCODE -ne 0 -or !(Test-Path $compiled)) {
+            throw "FXC compilation failed for $($stage.Target), source $source"
+        }
+        Write-Host "SM5 probe: $compiled SHA256=$((Get-FileHash $compiled -Algorithm SHA256).Hash)"
+    }
 }
 
 # User data (keys, firmware, game): see the parameters above.
