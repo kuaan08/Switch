@@ -46,6 +46,31 @@ jobs:
         run: |
           choco install nasm strawberryperl -y --no-progress --limit-output
 
+      - name: Install and verify glslang shader compiler
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $url = 'https://github.com/KhronosGroup/glslang/releases/download/16.6.0/glslang-16.6.0-windows-x86_64-release.zip'
+          $expected = '82bf434e69b9bb4829de7e2b4bc2c5e7a7861e53d66cf75e5cc70f5f694a8d9b'
+          $zip = Join-Path $env:RUNNER_TEMP 'glslang.zip'
+          $dir = Join-Path $env:RUNNER_TEMP 'glslang-unpack'
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          $actual = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "glslang release hash mismatch: $actual" }
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          $binary = Get-ChildItem $dir -Filter glslangValidator.exe -Recurse -File |
+            Select-Object -First 1
+          if (!$binary) {
+            $binary = Get-ChildItem $dir -Filter glslang.exe -Recurse -File |
+              Select-Object -First 1
+          }
+          if (!$binary) { throw 'Missing glslang executable in verified release ZIP' }
+          $bin = Join-Path $env:RUNNER_TEMP 'glslang-bin'
+          New-Item -ItemType Directory -Path $bin -Force | Out-Null
+          Copy-Item $binary.FullName (Join-Path $bin 'glslangValidator.exe')
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+          & (Join-Path $bin 'glslangValidator.exe') --version
+
       - name: Configure UWP x64 for AppContainer
         shell: cmd
         run: call tools\xbox\build-env.bat cmake --preset uwp-x64
